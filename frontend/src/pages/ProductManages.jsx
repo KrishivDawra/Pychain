@@ -5,7 +5,6 @@ import { ethers } from "ethers";
 import toast from "react-hot-toast";
 
 export default function ProductManager() {
-  const [account, setAccount] = useState(""); // Connected wallet
   const [id, setId] = useState("");
   const [newOwner, setNewOwner] = useState("");
   const [result, setResult] = useState(null);
@@ -15,11 +14,16 @@ export default function ProductManager() {
   const [escrowStatus, setEscrowStatus] = useState("");
   const [loading, setLoading] = useState(false);
   const [amount, setAmount] = useState("0.01");
+  const [signer, setSigner] = useState(null);
+  const [account, setAccount] = useState(null);
 
   // 🔐 Connect Wallet
   const handleConnect = async () => {
-    const addr = await connectWallet();
-    if (addr) setAccount(addr);
+    const res = await connectWallet();
+    if (res) {
+      setSigner(res.signer);
+      setAccount(res.address);
+    }
   };
 
   // ✅ Verify Product & Fetch Escrow
@@ -35,11 +39,7 @@ export default function ProductManager() {
 
       if (!product || product[0] == 0) {
         setResult(false);
-        setData(null);
-        setHistory([]);
-        setEscrow(null);
-        toast.error("Product not found ❌");
-        return;
+        return toast.error("Product not found ❌");
       }
 
       setResult(true);
@@ -51,12 +51,20 @@ export default function ProductManager() {
       });
       setHistory(events);
 
-      // Fetch escrow info if exists
+      // Fetch escrow info
       try {
         const tx = await esc.getTransaction(productId);
-        setEscrow(tx);
+        const [txnId, pid, buyer, seller, txnAmount, status] = tx;
+        setEscrow({
+          id: txnId,
+          productId: pid,
+          buyer,
+          seller,
+          amount: txnAmount,
+          status,
+        });
         const statusMap = ["AWAITING_PAYMENT", "AWAITING_DELIVERY", "COMPLETE", "REFUNDED"];
-        setEscrowStatus(statusMap[tx.status] || "Unknown");
+        setEscrowStatus(statusMap[status]);
       } catch {
         setEscrow(null);
         setEscrowStatus("No Escrow");
@@ -74,7 +82,7 @@ export default function ProductManager() {
 
   // 🔄 Transfer Ownership
   const transferOwnership = async () => {
-    if (!id || !newOwner) return toast.error("Enter Product ID & New Owner");
+    if (!id || !newOwner) return toast.error("Enter Product ID & new owner");
     try {
       setLoading(true);
       const contract = await getSupplyChain();
@@ -97,7 +105,9 @@ export default function ProductManager() {
     try {
       setLoading(true);
       const esc = await getEscrow();
-      const tx = await esc.depositPayment(data.id, { value: ethers.parseEther(amount) });
+      const tx = await esc.depositPayment(data.id, {
+        value: ethers.parseEther(amount),
+      });
       await tx.wait();
       toast.success("Payment deposited 💰");
       verify(data.id);
@@ -110,11 +120,11 @@ export default function ProductManager() {
   };
 
   const confirmDelivery = async () => {
-    if (!escrow) return toast.error("No escrow found ❌");
+    if (!data) return toast.error("Product not found ❌");
     try {
       setLoading(true);
-      const esc = await getEscrow();
-      const tx = await esc.confirmDelivery(data.id);
+      const contract = await getSupplyChain();
+      const tx = await contract.markDelivered(data.id);
       await tx.wait();
       toast.success("Payment released to seller ✅");
       verify(data.id);
@@ -143,6 +153,7 @@ export default function ProductManager() {
     }
   };
 
+  // 🔄 Status of Product
   const getStatus = () => {
     if (history.length === 0) return "Created 🏭";
     const last = history[history.length - 1].action;
@@ -155,12 +166,17 @@ export default function ProductManager() {
     <div className="p-6">
       <h2 className="text-2xl font-bold mb-4 text-blue-400">Product Manager</h2>
 
-      {!account && (
-        <button onClick={handleConnect} className="bg-blue-500 px-4 py-2 rounded mb-4">
+      {/* Wallet Connect */}
+      {!signer && (
+        <button
+          onClick={handleConnect}
+          className="bg-blue-500 px-4 py-2 rounded mb-4"
+        >
           Connect Wallet
         </button>
       )}
 
+      {/* Product Verification */}
       <input
         className="p-2 w-full mb-2 bg-gray-800 rounded"
         placeholder="Product ID"
@@ -172,7 +188,7 @@ export default function ProductManager() {
         className="bg-gradient-to-r from-purple-500 to-blue-500 px-4 py-2 rounded mb-4"
         onClick={() => verify(id)}
       >
-        {loading ? "Processing..." : "Verify Product"}
+        {loading ? "Processing..." : "Verify"}
       </button>
 
       {/* QR Scanner */}
@@ -188,7 +204,7 @@ export default function ProductManager() {
         />
       </div>
 
-      {/* Product Info + Actions */}
+      {/* Product Details & Actions */}
       {result && data && (
         <div className="bg-gray-900 p-6 rounded-2xl border border-gray-700 mb-4">
           <p className="text-green-400 text-lg mb-2">✅ Genuine Product</p>
@@ -199,24 +215,20 @@ export default function ProductManager() {
             <p><b>Owner:</b> {data.currentOwner}</p>
           </div>
 
-          {/* Transfer Ownership (only if current owner) */}
-          {account?.toLowerCase() === data.currentOwner.toLowerCase() && (
-            <div className="mb-4">
-              <input
-                className="p-2 w-full mb-2 bg-gray-800 rounded"
-                placeholder="New Owner Address"
-                value={newOwner}
-                onChange={(e) => setNewOwner(e.target.value)}
-              />
-              <button
-                onClick={transferOwnership}
-                className="bg-green-500 px-4 py-2 rounded w-full"
-                disabled={loading}
-              >
-                {loading ? "Processing..." : "Transfer Ownership"}
-              </button>
-            </div>
-          )}
+          {/* Transfer Ownership */}
+          <input
+            className="p-2 w-full mb-2 bg-gray-800 rounded"
+            placeholder="New Owner Address"
+            value={newOwner}
+            onChange={(e) => setNewOwner(e.target.value)}
+          />
+          <button
+            onClick={transferOwnership}
+            className="bg-green-500 px-4 py-2 rounded mb-4 w-full"
+            disabled={loading}
+          >
+            {loading ? "Processing..." : "Transfer Ownership"}
+          </button>
 
           {/* Escrow Info */}
           {escrow && (
@@ -226,16 +238,16 @@ export default function ProductManager() {
               <p><b>Seller:</b> {escrow.seller}</p>
               <p><b>Amount:</b> {ethers.formatEther(escrow.amount)} ETH</p>
 
-              {account?.toLowerCase() === escrow.buyer.toLowerCase() && escrow.status === 0 && (
+              {escrow.status === 0 && (
                 <button
                   onClick={depositPayment}
-                  className="bg-yellow-500 px-4 py-2 rounded w-full mt-2"
+                  className="bg-yellow-500 px-4 py-2 rounded mt-2 w-full"
                   disabled={loading}
                 >
                   Deposit Payment 💰
                 </button>
               )}
-              {account?.toLowerCase() === escrow.seller.toLowerCase() && escrow.status === 1 && (
+              {escrow.status === 1 && (
                 <div className="flex gap-2 mt-2">
                   <button
                     onClick={confirmDelivery}
@@ -256,7 +268,7 @@ export default function ProductManager() {
             </div>
           )}
 
-          {/* Timeline / Product Story */}
+          {/* Timeline / Product Journey */}
           {history.length > 0 && (
             <div className="bg-gray-800 p-4 rounded-xl">
               <h3 className="font-bold mb-3">📦 Product Journey</h3>

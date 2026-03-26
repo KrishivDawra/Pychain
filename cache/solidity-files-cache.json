@@ -2,8 +2,8 @@
   "_format": "hh-sol-cache-2",
   "files": {
     "E:\\Vcode\\Pychain\\contracts\\Escrow.sol": {
-      "lastModificationDate": 1774465874294,
-      "contentHash": "1bc870ac4204893e0a049fca8983491d",
+      "lastModificationDate": 1774477847796,
+      "contentHash": "8243e84f1a661e7ed6c13bcec3f4c2d5",
       "sourceName": "contracts/Escrow.sol",
       "solcConfig": {
         "version": "0.8.20",
@@ -38,8 +38,8 @@
       ]
     },
     "E:\\Vcode\\Pychain\\contracts\\SupplyChain.sol": {
-      "lastModificationDate": 1774465719300,
-      "contentHash": "69ceb2c2c2efbd906da200266bba8344",
+      "lastModificationDate": 1774479120165,
+      "contentHash": "fcc0c50b72c2895691af0a47c6540dc4",
       "sourceName": "contracts/SupplyChain.sol",
       "solcConfig": {
         "version": "0.8.20",
@@ -72,6 +72,7 @@
         "^0.8.20"
       ],
       "artifacts": [
+        "IEscrow",
         "SupplyChain"
       ]
     },

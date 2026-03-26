@@ -7,6 +7,7 @@ contract Escrow {
 
     struct Transaction {
         uint256 id;
+        uint256 productId;   // 🔥 LINK WITH SUPPLYCHAIN
         address buyer;
         address seller;
         uint256 amount;
@@ -16,78 +17,113 @@ contract Escrow {
     uint256 public transactionCount;
 
     mapping(uint256 => Transaction) public transactions;
+    mapping(uint256 => uint256) public productToTxn; // 🔥 productId → txnId
 
-    event TransactionCreated(uint256 id, address buyer, address seller, uint256 amount);
-    event PaymentDeposited(uint256 id);
+    address public supplyChain; // 🔥 authorized contract
+
+    event TransactionCreated(uint256 id, uint256 productId, address buyer, address seller);
+    event PaymentDeposited(uint256 id, uint256 amount);
     event PaymentReleased(uint256 id);
     event Refunded(uint256 id);
 
-    // ✅ Create Escrow Transaction
-    function createTransaction(address _seller) public {
+    modifier onlySupplyChain() {
+        require(msg.sender == supplyChain, "Only SupplyChain");
+        _;
+    }
+
+    // 🔗 CONNECT SUPPLYCHAIN
+    function setSupplyChain(address _supplyChain) public {
+        require(supplyChain == address(0), "Already set");
+        supplyChain = _supplyChain;
+    }
+
+    // ✅ CREATE TRANSACTION (LINKED TO PRODUCT)
+    function createTransaction(uint256 _productId, address _seller) public {
+        require(productToTxn[_productId] == 0, "Already exists");
+
         transactionCount++;
 
         transactions[transactionCount] = Transaction({
             id: transactionCount,
+            productId: _productId,
             buyer: msg.sender,
             seller: _seller,
             amount: 0,
             status: Status.AWAITING_PAYMENT
         });
 
-        emit TransactionCreated(transactionCount, msg.sender, _seller, 0);
+        productToTxn[_productId] = transactionCount;
+
+        emit TransactionCreated(transactionCount, _productId, msg.sender, _seller);
     }
 
-    // ✅ Deposit Payment
-    function depositPayment(uint256 _id) public payable {
-        Transaction storage txn = transactions[_id];
+    // 💰 DEPOSIT PAYMENT
+    function depositPayment(uint256 _productId) public payable {
+        uint256 txnId = productToTxn[_productId];
+        Transaction storage txn = transactions[txnId];
 
-        require(msg.sender == txn.buyer, "Only buyer can pay");
+        require(msg.sender == txn.buyer, "Only buyer");
         require(txn.status == Status.AWAITING_PAYMENT, "Invalid state");
-        require(msg.value > 0, "Amount must be > 0");
+        require(msg.value > 0, "Amount > 0");
 
         txn.amount = msg.value;
         txn.status = Status.AWAITING_DELIVERY;
 
-        emit PaymentDeposited(_id);
+        emit PaymentDeposited(txnId, msg.value);
     }
 
-    // ✅ Confirm Delivery → Release Payment
-    function confirmDelivery(uint256 _id) public {
-        Transaction storage txn = transactions[_id];
+    // 💰 AUTO RELEASE (CALLED BY SUPPLYCHAIN)
+    function releasePayment(uint256 _productId) public onlySupplyChain {
+        uint256 txnId = productToTxn[_productId];
+        Transaction storage txn = transactions[txnId];
 
-        require(msg.sender == txn.buyer, "Only buyer can confirm");
         require(txn.status == Status.AWAITING_DELIVERY, "Invalid state");
 
         txn.status = Status.COMPLETE;
 
         payable(txn.seller).transfer(txn.amount);
 
-        emit PaymentReleased(_id);
+        emit PaymentReleased(txnId);
     }
 
-    // ✅ Refund Buyer
-    function refund(uint256 _id) public {
-        Transaction storage txn = transactions[_id];
+    // 🔁 REFUND (SELLER SIDE)
+    function refund(uint256 _productId) public {
+        uint256 txnId = productToTxn[_productId];
+        Transaction storage txn = transactions[txnId];
 
-        require(msg.sender == txn.seller, "Only seller can refund");
+        require(msg.sender == txn.seller, "Only seller");
         require(txn.status == Status.AWAITING_DELIVERY, "Invalid state");
 
         txn.status = Status.REFUNDED;
 
         payable(txn.buyer).transfer(txn.amount);
 
-        emit Refunded(_id);
+        emit Refunded(txnId);
     }
 
-    // ✅ Get Transaction Details
-    function getTransaction(uint256 _id) public view returns (
-        uint256,
-        address,
-        address,
-        uint256,
-        Status
-    ) {
-        Transaction memory txn = transactions[_id];
-        return (txn.id, txn.buyer, txn.seller, txn.amount, txn.status);
+    // 👀 VIEW
+    function getTransaction(uint256 _productId)
+        public
+        view
+        returns (
+            uint256,
+            uint256,
+            address,
+            address,
+            uint256,
+            Status
+        )
+    {
+        uint256 txnId = productToTxn[_productId];
+        Transaction memory txn = transactions[txnId];
+
+        return (
+            txn.id,
+            txn.productId,
+            txn.buyer,
+            txn.seller,
+            txn.amount,
+            txn.status
+        );
     }
 }

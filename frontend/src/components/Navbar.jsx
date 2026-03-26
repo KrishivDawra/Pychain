@@ -7,16 +7,16 @@ export default function Navbar() {
 
   const handleConnect = async () => {
     try {
-      const signer = await connectWallet();
+      // ✅ connectWallet now returns the address directly
+      const address = await connectWallet();
 
-      if (!signer) {
+      if (!address) {
         alert("Wallet not connected. Please approve MetaMask.");
         return;
       }
 
-      const address = await signer.getAddress();
-      setAccount(address);
-
+      setAccount(address); // ✅ set connected address
+      console.log("Connected account:", address);
     } catch (err) {
       console.error("Connection Error:", err);
       alert("Wallet connection failed");
@@ -32,8 +32,7 @@ export default function Navbar() {
       <div className="flex gap-4 items-center">
         <Link to="/" className="text-blue-400">Home</Link>
         <Link to="/register" className="text-blue-400">Register</Link>
-        <Link to="/transfer" className="text-blue-400">Transfer</Link>
-        <Link to="/verify" className="text-blue-400">Verify</Link>
+        <Link to="/product-manager" className="text-blue-400">Product Manager</Link>
         <Link to="/escrow" className="text-blue-400">Escrow</Link>
         <Link to="/dashboard" className="text-blue-400">Dashboard</Link>
 
