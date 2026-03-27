@@ -9,7 +9,6 @@ interface IEscrow {
 }
 
 contract SupplyChain is AccessControl {
-
     // ✅ ROLES
     bytes32 public constant MANUFACTURER_ROLE = keccak256("MANUFACTURER");
     bytes32 public constant DISTRIBUTOR_ROLE = keccak256("DISTRIBUTOR");
@@ -25,6 +24,8 @@ contract SupplyChain is AccessControl {
         string metadataHash;
         address currentOwner;
         bool exists;
+        bool shipped;
+        bool delivered;
     }
 
     struct Ownership {
@@ -44,8 +45,15 @@ contract SupplyChain is AccessControl {
     mapping(uint256 => Ownership[]) public productHistory;
     mapping(uint256 => ProductEvent[]) public productEvents;
 
-    event ProductRegistered(uint256 productId, address manufacturer);
-    event OwnershipTransferred(uint256 productId, address from, address to);
+    event ProductRegistered(uint256 indexed productId, address indexed manufacturer);
+    event OwnershipTransferred(
+        uint256 indexed productId,
+        address indexed from,
+        address indexed to
+    );
+    event EscrowUpdated(address indexed escrowAddress);
+    event ProductShipped(uint256 indexed productId, address indexed distributor);
+    event ProductDelivered(uint256 indexed productId, address indexed retailer);
 
     constructor() {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
@@ -53,8 +61,10 @@ contract SupplyChain is AccessControl {
     }
 
     // 🔗 SET ESCROW
-    function setEscrow(address _escrow) public onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setEscrow(address _escrow) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(_escrow != address(0), "Invalid escrow address");
         escrow = IEscrow(_escrow);
+        emit EscrowUpdated(_escrow);
     }
 
     // 🔥 Timeline
@@ -64,11 +74,18 @@ contract SupplyChain is AccessControl {
         );
     }
 
+    function _requireProductExists(uint256 _productId) internal view {
+        require(products[_productId].exists, "Product does not exist");
+    }
+
     // ✅ REGISTER
     function registerProduct(string memory _name, string memory _metadataHash)
-        public
+        external
         onlyRole(MANUFACTURER_ROLE)
     {
+        require(bytes(_name).length > 0, "Name required");
+        require(bytes(_metadataHash).length > 0, "Metadata required");
+
         productCount++;
 
         products[productCount] = Product({
@@ -76,7 +93,9 @@ contract SupplyChain is AccessControl {
             name: _name,
             metadataHash: _metadataHash,
             currentOwner: msg.sender,
-            exists: true
+            exists: true,
+            shipped: false,
+            delivered: false
         });
 
         productHistory[productCount].push(
@@ -89,59 +108,75 @@ contract SupplyChain is AccessControl {
     }
 
     // 🔄 ROLE FLOW
-    function transferProduct(uint256 _productId, address _to) public {
-        require(products[_productId].exists, "Product does not exist");
-        require(products[_productId].currentOwner == msg.sender, "Not owner");
+    function transferProduct(uint256 _productId, address _to) external {
+        _requireProductExists(_productId);
+        require(_to != address(0), "Invalid recipient");
+
+        Product storage product = products[_productId];
+
+        require(product.currentOwner == msg.sender, "Not owner");
+        require(!product.delivered, "Already delivered");
+        require(msg.sender != _to, "Cannot transfer to self");
 
         if (hasRole(MANUFACTURER_ROLE, msg.sender)) {
             require(hasRole(DISTRIBUTOR_ROLE, _to), "Only Distributor");
-        } 
-        else if (hasRole(DISTRIBUTOR_ROLE, msg.sender)) {
+        } else if (hasRole(DISTRIBUTOR_ROLE, msg.sender)) {
             require(hasRole(WHOLESALER_ROLE, _to), "Only Wholesaler");
-        } 
-        else if (hasRole(WHOLESALER_ROLE, msg.sender)) {
+        } else if (hasRole(WHOLESALER_ROLE, msg.sender)) {
             require(hasRole(RETAILER_ROLE, _to), "Only Retailer");
+        } else {
+            revert("Unauthorized transfer role");
         }
 
-        address previousOwner = products[_productId].currentOwner;
+        address previousOwner = product.currentOwner;
+        product.currentOwner = _to;
 
-        products[_productId].currentOwner = _to;
-
-        productHistory[_productId].push(
-            Ownership(_to, block.timestamp)
-        );
-
+        productHistory[_productId].push(Ownership(_to, block.timestamp));
         addEvent(_productId, "Ownership Transferred");
 
         emit OwnershipTransferred(_productId, previousOwner, _to);
     }
 
     // 🚚 SHIP
-    function markShipped(uint256 _productId) public {
-        require(products[_productId].exists, "Product does not exist");
-        require(products[_productId].currentOwner == msg.sender, "Not owner");
+    function markShipped(uint256 _productId) external {
+        _requireProductExists(_productId);
+
+        Product storage product = products[_productId];
+
+        require(product.currentOwner == msg.sender, "Not owner");
         require(hasRole(DISTRIBUTOR_ROLE, msg.sender), "Only Distributor");
+        require(!product.shipped, "Already shipped");
+        require(!product.delivered, "Already delivered");
+
+        product.shipped = true;
 
         addEvent(_productId, "Product Shipped");
+        emit ProductShipped(_productId, msg.sender);
     }
 
     // 📦 DELIVER + 💰 AUTO PAYMENT
-    function markDelivered(uint256 _productId) public {
-        require(products[_productId].exists, "Product does not exist");
-        require(products[_productId].currentOwner == msg.sender, "Not owner");
+    function markDelivered(uint256 _productId) external {
+        _requireProductExists(_productId);
+
+        Product storage product = products[_productId];
+
+        require(product.currentOwner == msg.sender, "Not owner");
         require(hasRole(RETAILER_ROLE, msg.sender), "Only Retailer");
+        require(!product.delivered, "Already delivered");
+
+        product.delivered = true;
 
         addEvent(_productId, "Product Delivered");
+        emit ProductDelivered(_productId, msg.sender);
 
         // 💰 AUTO RELEASE PAYMENT
-        if (address(escrow) != address(0)) {
-            escrow.releasePayment(_productId);
-        }
+        require(address(escrow) != address(0), "Escrow not set");
+        escrow.releasePayment(_productId);
     }
 
     // 📦 GET PRODUCT
     function getProduct(uint256 _productId)
-        public
+        external
         view
         returns (
             uint256,
@@ -150,39 +185,73 @@ contract SupplyChain is AccessControl {
             address
         )
     {
-        require(products[_productId].exists, "Product does not exist");
+        _requireProductExists(_productId);
 
         Product memory p = products[_productId];
         return (p.id, p.name, p.metadataHash, p.currentOwner);
     }
 
+    // ✅ EXTRA HELPER FOR FRONTEND
+    function getProductDetails(uint256 _productId)
+        external
+        view
+        returns (
+            uint256,
+            string memory,
+            string memory,
+            address,
+            bool,
+            bool
+        )
+    {
+        _requireProductExists(_productId);
+
+        Product memory p = products[_productId];
+        return (
+            p.id,
+            p.name,
+            p.metadataHash,
+            p.currentOwner,
+            p.shipped,
+            p.delivered
+        );
+    }
+
     // 📜 HISTORY
     function getProductHistory(uint256 _productId)
-        public
+        external
         view
         returns (Ownership[] memory)
     {
+        _requireProductExists(_productId);
         return productHistory[_productId];
     }
 
     // 📊 TIMELINE
     function getProductEvents(uint256 _productId)
-        public
+        external
         view
         returns (ProductEvent[] memory)
     {
+        _requireProductExists(_productId);
         return productEvents[_productId];
     }
 
     // 🔍 VERIFY
     function verifyProduct(uint256 _productId, string memory _metadataHash)
-        public
+        external
         view
         returns (bool)
     {
-        require(products[_productId].exists, "Product does not exist");
+        _requireProductExists(_productId);
 
-        return keccak256(bytes(products[_productId].metadataHash)) ==
+        return
+            keccak256(bytes(products[_productId].metadataHash)) ==
             keccak256(bytes(_metadataHash));
+    }
+
+    // 👀 HELPER
+    function escrowAddress() external view returns (address) {
+        return address(escrow);
     }
 }

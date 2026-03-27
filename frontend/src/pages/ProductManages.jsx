@@ -11,7 +11,7 @@ export default function ProductManager() {
   const [data, setData] = useState(null);
   const [history, setHistory] = useState([]);
   const [escrow, setEscrow] = useState(null);
-  const [escrowStatus, setEscrowStatus] = useState("");
+  const [escrowStatus, setEscrowStatus] = useState("No Escrow");
   const [loading, setLoading] = useState(false);
   const [amount, setAmount] = useState("0.01");
   const [signer, setSigner] = useState(null);
@@ -19,6 +19,26 @@ export default function ProductManager() {
 
   const shortAddress = (address) =>
     address ? `${address.slice(0, 6)}...${address.slice(-4)}` : "";
+
+  const resetState = () => {
+    setId("");
+    setNewOwner("");
+    setResult(null);
+    setData(null);
+    setHistory([]);
+    setEscrow(null);
+    setEscrowStatus("No Escrow");
+    setAmount("0.01");
+  };
+
+  const parseError = (err, fallback) => {
+    return (
+      err?.reason ||
+      err?.shortMessage ||
+      err?.message ||
+      fallback
+    );
+  };
 
   // 🔐 Connect Wallet
   const handleConnect = async () => {
@@ -31,7 +51,7 @@ export default function ProductManager() {
       }
     } catch (err) {
       console.error(err);
-      toast.error("Wallet connection failed ❌");
+      toast.error(parseError(err, "Wallet connection failed ❌"));
     }
   };
 
@@ -41,17 +61,19 @@ export default function ProductManager() {
 
     try {
       setLoading(true);
+
       const contract = await getSupplyChain();
       const esc = await getEscrow();
 
-      const product = await contract.getProduct(productId);
+      const product = await contract.getProductDetails(productId);
       const events = await contract.getProductEvents(productId);
 
-      if (!product || product[0] == 0) {
+      if (!product || Number(product[0]) === 0) {
         setResult(false);
         setData(null);
         setHistory([]);
         setEscrow(null);
+        setEscrowStatus("No Escrow");
         return toast.error("Product not found ❌");
       }
 
@@ -61,30 +83,41 @@ export default function ProductManager() {
         name: product[1],
         metadata: product[2],
         currentOwner: product[3],
+        shipped: product[4],
+        delivered: product[5],
       });
       setHistory(events);
 
       try {
-        const tx = await esc.getTransaction(productId);
-        const [txnId, pid, buyer, seller, txnAmount, status] = tx;
+        const txnId = await esc.getTransactionIdByProduct(productId);
 
-        setEscrow({
-          id: txnId,
-          productId: pid,
-          buyer,
-          seller,
-          amount: txnAmount,
-          status,
-        });
+        if (Number(txnId) === 0) {
+          setEscrow(null);
+          setEscrowStatus("No Escrow");
+        } else {
+          const tx = await esc.getTransaction(productId);
+          const [id, pid, buyer, seller, txnAmount, status] = tx;
 
-        const statusMap = [
-          "AWAITING_PAYMENT",
-          "AWAITING_DELIVERY",
-          "COMPLETE",
-          "REFUNDED",
-        ];
-        setEscrowStatus(statusMap[Number(status)] || "UNKNOWN");
-      } catch {
+          setEscrow({
+            id,
+            productId: pid,
+            buyer,
+            seller,
+            amount: txnAmount,
+            status,
+          });
+
+          const statusMap = [
+            "AWAITING_PAYMENT",
+            "AWAITING_DELIVERY",
+            "COMPLETE",
+            "REFUNDED",
+          ];
+
+          setEscrowStatus(statusMap[Number(status)] || "UNKNOWN");
+        }
+      } catch (err) {
+        console.error("Escrow fetch error:", err);
         setEscrow(null);
         setEscrowStatus("No Escrow");
       }
@@ -94,7 +127,31 @@ export default function ProductManager() {
       console.error(err);
       setResult(false);
       setData(null);
-      toast.error("Verification failed ❌");
+      setHistory([]);
+      setEscrow(null);
+      setEscrowStatus("No Escrow");
+      toast.error(parseError(err, "Verification failed ❌"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 🆕 Create Escrow Transaction
+  const createEscrowTransaction = async () => {
+    if (!data) return toast.error("Verify product first ❌");
+
+    try {
+      setLoading(true);
+      const esc = await getEscrow();
+
+      const tx = await esc.createTransaction(data.id, data.currentOwner);
+      await tx.wait();
+
+      toast.success("Escrow transaction created ✅");
+      await verify(data.id);
+    } catch (err) {
+      console.error(err);
+      toast.error(parseError(err, "Escrow creation failed ❌"));
     } finally {
       setLoading(false);
     }
@@ -111,18 +168,40 @@ export default function ProductManager() {
       await tx.wait();
       toast.success("Ownership transferred ✅");
       setNewOwner("");
-      verify(id);
+      await verify(id);
     } catch (err) {
       console.error(err);
-      toast.error("Transfer failed ❌");
+      toast.error(parseError(err, "Transfer failed ❌"));
     } finally {
       setLoading(false);
     }
   };
 
-  // 💰 Escrow Actions
+  // 🚚 Mark Shipped
+  const markShipped = async () => {
+    if (!data) return toast.error("Product not found ❌");
+
+    try {
+      setLoading(true);
+      const contract = await getSupplyChain();
+      const tx = await contract.markShipped(data.id);
+      await tx.wait();
+      toast.success("Product marked as shipped 🚚");
+      await verify(data.id);
+    } catch (err) {
+      console.error(err);
+      toast.error(parseError(err, "Mark shipped failed ❌"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 💰 Deposit Payment
   const depositPayment = async () => {
     if (!escrow) return toast.error("No escrow found ❌");
+    if (!amount || Number(amount) <= 0) {
+      return toast.error("Enter valid ETH amount ❌");
+    }
 
     try {
       setLoading(true);
@@ -132,15 +211,16 @@ export default function ProductManager() {
       });
       await tx.wait();
       toast.success("Payment deposited 💰");
-      verify(data.id);
+      await verify(data.id);
     } catch (err) {
       console.error(err);
-      toast.error("Payment failed ❌");
+      toast.error(parseError(err, "Payment failed ❌"));
     } finally {
       setLoading(false);
     }
   };
 
+  // 📦 Confirm Delivery → release payment via SupplyChain
   const confirmDelivery = async () => {
     if (!data) return toast.error("Product not found ❌");
 
@@ -149,16 +229,17 @@ export default function ProductManager() {
       const contract = await getSupplyChain();
       const tx = await contract.markDelivered(data.id);
       await tx.wait();
-      toast.success("Payment released to seller ✅");
-      verify(data.id);
+      toast.success("Product delivered and payment released ✅");
+      await verify(data.id);
     } catch (err) {
       console.error(err);
-      toast.error("Release failed ❌");
+      toast.error(parseError(err, "Delivery/release failed ❌"));
     } finally {
       setLoading(false);
     }
   };
 
+  // 🔁 Refund
   const refundPayment = async () => {
     if (!escrow) return toast.error("No escrow found ❌");
 
@@ -168,27 +249,25 @@ export default function ProductManager() {
       const tx = await esc.refund(data.id);
       await tx.wait();
       toast.success("Payment refunded to buyer ✅");
-      verify(data.id);
+      await verify(data.id);
     } catch (err) {
       console.error(err);
-      toast.error("Refund failed ❌");
+      toast.error(parseError(err, "Refund failed ❌"));
     } finally {
       setLoading(false);
     }
   };
 
   const getStatus = () => {
-    if (history.length === 0) return "Created 🏭";
-    const last = history[history.length - 1].action;
-    if (last.includes("Delivered")) return "Delivered 📦";
-    if (last.includes("Shipped")) return "In Transit 🚚";
-    return "Processing ⏳";
+    if (!data) return "Unknown";
+    if (data.delivered) return "Delivered 📦";
+    if (data.shipped) return "In Transit 🚚";
+    return "Created / Processing ⏳";
   };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-blue-100 px-4 md:px-8 py-10">
       <div className="max-w-7xl mx-auto">
-        {/* Header */}
         <div className="mb-8 text-center">
           <p className="text-sm font-semibold tracking-wide text-blue-600 uppercase mb-2">
             Product Management
@@ -202,9 +281,7 @@ export default function ProductManager() {
           </p>
         </div>
 
-        {/* Top Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Left Main Panel */}
           <div className="lg:col-span-2 bg-white rounded-3xl shadow-xl border border-blue-100 p-6 md:p-8">
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-8">
               <div>
@@ -231,7 +308,6 @@ export default function ProductManager() {
               )}
             </div>
 
-            {/* Verify Controls */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
               <div className="md:col-span-3">
                 <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -260,7 +336,6 @@ export default function ProductManager() {
               </div>
             </div>
 
-            {/* QR Scanner */}
             <div className="bg-blue-50 border border-blue-100 rounded-2xl p-5 mb-8">
               <h3 className="text-lg font-semibold text-gray-900 mb-2">
                 Scan Product QR
@@ -285,10 +360,8 @@ export default function ProductManager() {
               />
             </div>
 
-            {/* Product Result */}
             {result && data && (
               <div className="space-y-6">
-                {/* Status Banner */}
                 <div className="rounded-2xl border border-green-200 bg-green-50 p-5">
                   <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
                     <div>
@@ -308,7 +381,6 @@ export default function ProductManager() {
                   </div>
                 </div>
 
-                {/* Product Cards */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-sm">
                     <p className="text-sm text-gray-500 mb-1">Product Name</p>
@@ -332,7 +404,6 @@ export default function ProductManager() {
                   </div>
                 </div>
 
-                {/* Transfer Ownership */}
                 <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm">
                   <h3 className="text-xl font-bold text-gray-900 mb-2">
                     Transfer Ownership
@@ -367,18 +438,28 @@ export default function ProductManager() {
                   </div>
                 </div>
 
-                {/* Escrow Info */}
                 <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm">
                   <h3 className="text-xl font-bold text-gray-900 mb-2">
                     Escrow Management
                   </h3>
                   <p className="text-gray-600 mb-5">
-                    View escrow details and take payment-related actions.
+                    Create escrow, deposit payment, and manage delivery or refund.
                   </p>
 
                   {!escrow ? (
                     <div className="rounded-xl bg-gray-50 border border-gray-200 p-5 text-gray-600">
-                      No escrow found for this product.
+                      <p className="mb-4">No escrow found for this product.</p>
+                      <button
+                        onClick={createEscrowTransaction}
+                        disabled={loading}
+                        className={`px-5 py-3 rounded-xl font-semibold text-white transition ${
+                          loading
+                            ? "bg-blue-300 cursor-not-allowed"
+                            : "bg-blue-600 hover:bg-blue-700 shadow-md"
+                        }`}
+                      >
+                        {loading ? "Processing..." : "Create Escrow"}
+                      </button>
                     </div>
                   ) : (
                     <>
@@ -412,7 +493,7 @@ export default function ProductManager() {
                         </div>
                       </div>
 
-                      {escrow.status === 0 && (
+                      {Number(escrow.status) === 0 && (
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
                           <div className="md:col-span-2">
                             <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -442,8 +523,20 @@ export default function ProductManager() {
                         </div>
                       )}
 
-                      {escrow.status === 1 && (
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {Number(escrow.status) === 1 && (
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                          <button
+                            onClick={markShipped}
+                            className={`px-4 py-3 rounded-xl font-semibold text-white transition ${
+                              loading
+                                ? "bg-indigo-300 cursor-not-allowed"
+                                : "bg-indigo-600 hover:bg-indigo-700 shadow-md"
+                            }`}
+                            disabled={loading || data.shipped}
+                          >
+                            {data.shipped ? "Already Shipped 🚚" : "Mark Shipped 🚚"}
+                          </button>
+
                           <button
                             onClick={confirmDelivery}
                             className={`px-4 py-3 rounded-xl font-semibold text-white transition ${
@@ -453,7 +546,7 @@ export default function ProductManager() {
                             }`}
                             disabled={loading}
                           >
-                            Release Payment ✅
+                            Mark Delivered & Release ✅
                           </button>
 
                           <button
@@ -469,11 +562,22 @@ export default function ProductManager() {
                           </button>
                         </div>
                       )}
+
+                      {Number(escrow.status) === 2 && (
+                        <div className="rounded-xl bg-green-50 border border-green-200 p-4 text-green-700 font-medium">
+                          ✅ Escrow complete. Payment has been released to seller.
+                        </div>
+                      )}
+
+                      {Number(escrow.status) === 3 && (
+                        <div className="rounded-xl bg-red-50 border border-red-200 p-4 text-red-700 font-medium">
+                          🔁 Escrow refunded. Payment has been returned to buyer.
+                        </div>
+                      )}
                     </>
                   )}
                 </div>
 
-                {/* Product Journey */}
                 <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm">
                   <h3 className="text-xl font-bold text-gray-900 mb-2">
                     Product Journey
@@ -520,7 +624,6 @@ export default function ProductManager() {
             )}
           </div>
 
-          {/* Right Sidebar */}
           <div className="space-y-6">
             <div className="bg-white rounded-3xl shadow-xl border border-blue-100 p-6">
               <h3 className="text-xl font-bold text-gray-900 mb-3">
@@ -536,16 +639,7 @@ export default function ProductManager() {
                 </button>
 
                 <button
-                  onClick={() => {
-                    setId("");
-                    setNewOwner("");
-                    setResult(null);
-                    setData(null);
-                    setHistory([]);
-                    setEscrow(null);
-                    setEscrowStatus("");
-                    setAmount("0.01");
-                  }}
+                  onClick={resetState}
                   className="w-full bg-gray-100 hover:bg-gray-200 text-gray-800 px-4 py-3 rounded-xl font-semibold transition"
                 >
                   Reset Form
@@ -560,19 +654,19 @@ export default function ProductManager() {
               <div className="space-y-4 text-sm text-gray-700">
                 <div className="flex gap-3">
                   <span className="text-xl">1️⃣</span>
-                  <p>Connect your wallet to access ownership and escrow actions.</p>
+                  <p>Connect your wallet and verify a product.</p>
                 </div>
                 <div className="flex gap-3">
                   <span className="text-xl">2️⃣</span>
-                  <p>Verify a product using its ID or by scanning its QR code.</p>
+                  <p>Create escrow for the verified product.</p>
                 </div>
                 <div className="flex gap-3">
                   <span className="text-xl">3️⃣</span>
-                  <p>Transfer ownership or manage payment release and refunds.</p>
+                  <p>Buyer deposits payment into escrow.</p>
                 </div>
                 <div className="flex gap-3">
                   <span className="text-xl">4️⃣</span>
-                  <p>Review the full blockchain-backed product journey.</p>
+                  <p>Distributor ships, retailer delivers, payment is released.</p>
                 </div>
               </div>
             </div>
