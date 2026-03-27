@@ -10,7 +10,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <Navbar />
-      <div className="p-6 max-w-6xl mx-auto">
+      <div className="">
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/register" element={<RegisterProduct />} />
