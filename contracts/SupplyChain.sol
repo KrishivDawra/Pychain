@@ -3,19 +3,17 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
 
-// 🔗 Escrow Interface
+// Escrow interface
 interface IEscrow {
     function releasePayment(uint256 productId) external;
 }
 
 contract SupplyChain is AccessControl {
-    // ✅ ROLES
     bytes32 public constant MANUFACTURER_ROLE = keccak256("MANUFACTURER");
     bytes32 public constant DISTRIBUTOR_ROLE = keccak256("DISTRIBUTOR");
     bytes32 public constant WHOLESALER_ROLE = keccak256("WHOLESALER");
     bytes32 public constant RETAILER_ROLE = keccak256("RETAILER");
 
-    // 🔗 Escrow contract
     IEscrow public escrow;
 
     struct Product {
@@ -46,11 +44,7 @@ contract SupplyChain is AccessControl {
     mapping(uint256 => ProductEvent[]) public productEvents;
 
     event ProductRegistered(uint256 indexed productId, address indexed manufacturer);
-    event OwnershipTransferred(
-        uint256 indexed productId,
-        address indexed from,
-        address indexed to
-    );
+    event OwnershipTransferred(uint256 indexed productId, address indexed from, address indexed to);
     event EscrowUpdated(address indexed escrowAddress);
     event ProductShipped(uint256 indexed productId, address indexed distributor);
     event ProductDelivered(uint256 indexed productId, address indexed retailer);
@@ -60,14 +54,12 @@ contract SupplyChain is AccessControl {
         _grantRole(MANUFACTURER_ROLE, msg.sender);
     }
 
-    // 🔗 SET ESCROW
     function setEscrow(address _escrow) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(_escrow != address(0), "Invalid escrow address");
         escrow = IEscrow(_escrow);
         emit EscrowUpdated(_escrow);
     }
 
-    // 🔥 Timeline
     function addEvent(uint256 productId, string memory action) internal {
         productEvents[productId].push(
             ProductEvent(action, msg.sender, block.timestamp)
@@ -78,11 +70,10 @@ contract SupplyChain is AccessControl {
         require(products[_productId].exists, "Product does not exist");
     }
 
-    // ✅ REGISTER
-    function registerProduct(string memory _name, string memory _metadataHash)
-        external
-        onlyRole(MANUFACTURER_ROLE)
-    {
+    function registerProduct(
+        string memory _name,
+        string memory _metadataHash
+    ) external onlyRole(MANUFACTURER_ROLE) {
         require(bytes(_name).length > 0, "Name required");
         require(bytes(_metadataHash).length > 0, "Metadata required");
 
@@ -103,11 +94,9 @@ contract SupplyChain is AccessControl {
         );
 
         addEvent(productCount, "Product Created by Manufacturer");
-
         emit ProductRegistered(productCount, msg.sender);
     }
 
-    // 🔄 ROLE FLOW
     function transferProduct(uint256 _productId, address _to) external {
         _requireProductExists(_productId);
         require(_to != address(0), "Invalid recipient");
@@ -137,7 +126,6 @@ contract SupplyChain is AccessControl {
         emit OwnershipTransferred(_productId, previousOwner, _to);
     }
 
-    // 🚚 SHIP
     function markShipped(uint256 _productId) external {
         _requireProductExists(_productId);
 
@@ -154,7 +142,6 @@ contract SupplyChain is AccessControl {
         emit ProductShipped(_productId, msg.sender);
     }
 
-    // 📦 DELIVER + 💰 AUTO PAYMENT
     function markDelivered(uint256 _productId) external {
         _requireProductExists(_productId);
 
@@ -162,19 +149,18 @@ contract SupplyChain is AccessControl {
 
         require(product.currentOwner == msg.sender, "Not owner");
         require(hasRole(RETAILER_ROLE, msg.sender), "Only Retailer");
+        require(product.shipped, "Product not shipped");
         require(!product.delivered, "Already delivered");
+        require(address(escrow) != address(0), "Escrow not set");
 
         product.delivered = true;
 
         addEvent(_productId, "Product Delivered");
         emit ProductDelivered(_productId, msg.sender);
 
-        // 💰 AUTO RELEASE PAYMENT
-        require(address(escrow) != address(0), "Escrow not set");
         escrow.releasePayment(_productId);
     }
 
-    // 📦 GET PRODUCT
     function getProduct(uint256 _productId)
         external
         view
@@ -186,12 +172,10 @@ contract SupplyChain is AccessControl {
         )
     {
         _requireProductExists(_productId);
-
         Product memory p = products[_productId];
         return (p.id, p.name, p.metadataHash, p.currentOwner);
     }
 
-    // ✅ EXTRA HELPER FOR FRONTEND
     function getProductDetails(uint256 _productId)
         external
         view
@@ -217,7 +201,6 @@ contract SupplyChain is AccessControl {
         );
     }
 
-    // 📜 HISTORY
     function getProductHistory(uint256 _productId)
         external
         view
@@ -227,7 +210,6 @@ contract SupplyChain is AccessControl {
         return productHistory[_productId];
     }
 
-    // 📊 TIMELINE
     function getProductEvents(uint256 _productId)
         external
         view
@@ -237,7 +219,6 @@ contract SupplyChain is AccessControl {
         return productEvents[_productId];
     }
 
-    // 🔍 VERIFY
     function verifyProduct(uint256 _productId, string memory _metadataHash)
         external
         view
@@ -250,7 +231,6 @@ contract SupplyChain is AccessControl {
             keccak256(bytes(_metadataHash));
     }
 
-    // 👀 HELPER
     function escrowAddress() external view returns (address) {
         return address(escrow);
     }

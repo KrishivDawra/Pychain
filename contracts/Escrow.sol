@@ -1,6 +1,18 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+interface ISupplyChain {
+    function getProduct(uint256 _productId)
+        external
+        view
+        returns (
+            uint256,
+            string memory,
+            string memory,
+            address
+        );
+}
+
 contract Escrow {
     enum Status {
         AWAITING_PAYMENT,
@@ -23,7 +35,7 @@ contract Escrow {
     address public owner;
 
     mapping(uint256 => Transaction) public transactions;
-    mapping(uint256 => uint256) public productToTxn; // productId => txnId
+    mapping(uint256 => uint256) public productToTxn;
 
     event SupplyChainSet(address indexed supplyChain);
     event TransactionCreated(
@@ -50,21 +62,21 @@ contract Escrow {
         owner = msg.sender;
     }
 
-    // 🔗 CONNECT SUPPLYCHAIN
     function setSupplyChain(address _supplyChain) external onlyOwner {
         require(_supplyChain != address(0), "Invalid SupplyChain");
-        require(supplyChain == address(0), "Already set");
-
         supplyChain = _supplyChain;
         emit SupplyChainSet(_supplyChain);
     }
 
-    // ✅ CREATE TRANSACTION
     function createTransaction(uint256 _productId, address _seller) external {
+        require(supplyChain != address(0), "SupplyChain not set");
         require(_productId > 0, "Invalid product ID");
         require(_seller != address(0), "Invalid seller");
         require(productToTxn[_productId] == 0, "Already exists");
         require(msg.sender != _seller, "Buyer and seller same");
+
+        (, , , address currentOwner) = ISupplyChain(supplyChain).getProduct(_productId);
+        require(currentOwner == _seller, "Seller is not current owner");
 
         transactionCount++;
 
@@ -79,15 +91,9 @@ contract Escrow {
 
         productToTxn[_productId] = transactionCount;
 
-        emit TransactionCreated(
-            transactionCount,
-            _productId,
-            msg.sender,
-            _seller
-        );
+        emit TransactionCreated(transactionCount, _productId, msg.sender, _seller);
     }
 
-    // 💰 DEPOSIT PAYMENT
     function depositPayment(uint256 _productId) external payable {
         uint256 txnId = productToTxn[_productId];
         require(txnId != 0, "Transaction not found");
@@ -105,7 +111,6 @@ contract Escrow {
         emit PaymentDeposited(txnId, msg.value);
     }
 
-    // 💰 AUTO RELEASE (CALLED BY SUPPLYCHAIN)
     function releasePayment(uint256 _productId) external onlySupplyChain {
         uint256 txnId = productToTxn[_productId];
         require(txnId != 0, "Transaction not found");
@@ -117,30 +122,35 @@ contract Escrow {
 
         txn.status = Status.COMPLETE;
 
-        payable(txn.seller).transfer(txn.amount);
+        uint256 amount = txn.amount;
+        txn.amount = 0;
+
+        (bool success, ) = payable(txn.seller).call{value: amount}("");
+        require(success, "Payment transfer failed");
 
         emit PaymentReleased(txnId);
     }
 
-    // 🔁 REFUND
-    function refund(uint256 _productId) external {
+    function refund(uint256 _productId) external onlyOwner {
         uint256 txnId = productToTxn[_productId];
         require(txnId != 0, "Transaction not found");
 
         Transaction storage txn = transactions[txnId];
 
-        require(msg.sender == txn.seller, "Only seller");
         require(txn.status == Status.AWAITING_DELIVERY, "Invalid state");
-        require(txn.amount > 0, "No funds deposited");
+
+        uint256 amount = txn.amount;
+        require(amount > 0, "No funds deposited");
 
         txn.status = Status.REFUNDED;
+        txn.amount = 0;
 
-        payable(txn.buyer).transfer(txn.amount);
+        (bool success, ) = payable(txn.buyer).call{value: amount}("");
+        require(success, "Refund transfer failed");
 
         emit Refunded(txnId);
     }
 
-    // 👀 VIEW
     function getTransaction(uint256 _productId)
         external
         view
@@ -168,7 +178,6 @@ contract Escrow {
         );
     }
 
-    // ✅ Helper for frontend
     function getTransactionIdByProduct(uint256 _productId)
         external
         view

@@ -1,6 +1,11 @@
 import { useState } from "react";
 import QRScanner from "../components/QRScanner";
-import { getSupplyChain, getEscrow, connectWallet } from "../utils/contract";
+import {
+  getSupplyChain,
+  getEscrow,
+  connectWallet,
+  getCurrentAccount,
+} from "../utils/contract";
 import { ethers } from "ethers";
 import toast from "react-hot-toast";
 
@@ -32,12 +37,30 @@ export default function ProductManager() {
   };
 
   const parseError = (err, fallback) => {
-    return (
-      err?.reason ||
-      err?.shortMessage ||
-      err?.message ||
-      fallback
-    );
+    return err?.reason || err?.shortMessage || err?.message || fallback;
+  };
+
+  const ensureConnected = async () => {
+    try {
+      const existing = await getCurrentAccount();
+      if (existing) {
+        setAccount(existing);
+        return true;
+      }
+
+      const res = await connectWallet();
+      if (res) {
+        setSigner(res.signer);
+        setAccount(res.address);
+        return true;
+      }
+
+      return false;
+    } catch (err) {
+      console.error(err);
+      toast.error(parseError(err, "Wallet connection failed ❌"));
+      return false;
+    }
   };
 
   // 🔐 Connect Wallet
@@ -62,8 +85,9 @@ export default function ProductManager() {
     try {
       setLoading(true);
 
-      const contract = await getSupplyChain();
-      const esc = await getEscrow();
+      // read-only calls
+      const contract = await getSupplyChain(false);
+      const esc = await getEscrow(false);
 
       const product = await contract.getProductDetails(productId);
       const events = await contract.getProductEvents(productId);
@@ -96,10 +120,10 @@ export default function ProductManager() {
           setEscrowStatus("No Escrow");
         } else {
           const tx = await esc.getTransaction(productId);
-          const [id, pid, buyer, seller, txnAmount, status] = tx;
+          const [txnIdValue, pid, buyer, seller, txnAmount, status] = tx;
 
           setEscrow({
-            id,
+            id: txnIdValue,
             productId: pid,
             buyer,
             seller,
@@ -139,10 +163,11 @@ export default function ProductManager() {
   // 🆕 Create Escrow Transaction
   const createEscrowTransaction = async () => {
     if (!data) return toast.error("Verify product first ❌");
+    if (!(await ensureConnected())) return;
 
     try {
       setLoading(true);
-      const esc = await getEscrow();
+      const esc = await getEscrow(true);
 
       const tx = await esc.createTransaction(data.id, data.currentOwner);
       await tx.wait();
@@ -160,10 +185,11 @@ export default function ProductManager() {
   // 🔄 Transfer Ownership
   const transferOwnership = async () => {
     if (!id || !newOwner) return toast.error("Enter Product ID & new owner");
+    if (!(await ensureConnected())) return;
 
     try {
       setLoading(true);
-      const contract = await getSupplyChain();
+      const contract = await getSupplyChain(true);
       const tx = await contract.transferProduct(id, newOwner);
       await tx.wait();
       toast.success("Ownership transferred ✅");
@@ -180,10 +206,11 @@ export default function ProductManager() {
   // 🚚 Mark Shipped
   const markShipped = async () => {
     if (!data) return toast.error("Product not found ❌");
+    if (!(await ensureConnected())) return;
 
     try {
       setLoading(true);
-      const contract = await getSupplyChain();
+      const contract = await getSupplyChain(true);
       const tx = await contract.markShipped(data.id);
       await tx.wait();
       toast.success("Product marked as shipped 🚚");
@@ -202,10 +229,11 @@ export default function ProductManager() {
     if (!amount || Number(amount) <= 0) {
       return toast.error("Enter valid ETH amount ❌");
     }
+    if (!(await ensureConnected())) return;
 
     try {
       setLoading(true);
-      const esc = await getEscrow();
+      const esc = await getEscrow(true);
       const tx = await esc.depositPayment(data.id, {
         value: ethers.parseEther(amount),
       });
@@ -223,10 +251,12 @@ export default function ProductManager() {
   // 📦 Confirm Delivery → release payment via SupplyChain
   const confirmDelivery = async () => {
     if (!data) return toast.error("Product not found ❌");
+    if (!data.shipped) return toast.error("Product must be shipped first ❌");
+    if (!(await ensureConnected())) return;
 
     try {
       setLoading(true);
-      const contract = await getSupplyChain();
+      const contract = await getSupplyChain(true);
       const tx = await contract.markDelivered(data.id);
       await tx.wait();
       toast.success("Product delivered and payment released ✅");
@@ -242,10 +272,11 @@ export default function ProductManager() {
   // 🔁 Refund
   const refundPayment = async () => {
     if (!escrow) return toast.error("No escrow found ❌");
+    if (!(await ensureConnected())) return;
 
     try {
       setLoading(true);
-      const esc = await getEscrow();
+      const esc = await getEscrow(true);
       const tx = await esc.refund(data.id);
       await tx.wait();
       toast.success("Payment refunded to buyer ✅");
@@ -294,7 +325,7 @@ export default function ProductManager() {
                 </p>
               </div>
 
-              {!signer ? (
+              {!signer && !account ? (
                 <button
                   onClick={handleConnect}
                   className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-3 rounded-xl font-semibold transition shadow-md"
@@ -544,7 +575,7 @@ export default function ProductManager() {
                                 ? "bg-green-300 cursor-not-allowed"
                                 : "bg-green-600 hover:bg-green-700 shadow-md"
                             }`}
-                            disabled={loading}
+                            disabled={loading || !data.shipped}
                           >
                             Mark Delivered & Release ✅
                           </button>
@@ -605,9 +636,7 @@ export default function ProductManager() {
                             {item.actor}
                           </p>
                           <p className="text-xs text-gray-500 mt-1">
-                            {new Date(
-                              Number(item.timestamp) * 1000
-                            ).toLocaleString()}
+                            {new Date(Number(item.timestamp) * 1000).toLocaleString()}
                           </p>
                         </div>
                       ))}

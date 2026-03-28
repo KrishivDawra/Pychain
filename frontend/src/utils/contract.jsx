@@ -6,15 +6,37 @@ import Escrow from "../../../artifacts/contracts/Escrow.sol/Escrow.json";
 
 let provider = null;
 let signer = null;
+let connectPromise = null;
+
+const SEPOLIA_CHAIN_ID = "11155111";
+const SEPOLIA_CHAIN_HEX = "0xaa36a7";
 
 // 🔄 RESET CACHED WALLET OBJECTS
 const resetConnection = () => {
   provider = null;
   signer = null;
+  connectPromise = null;
+};
+
+// ✅ BASIC ADDRESS VALIDATION
+const validateConfiguredAddresses = () => {
+  if (!addresses?.supplyChain || !ethers.isAddress(addresses.supplyChain)) {
+    throw new Error("Invalid SupplyChain address in contract-address.json");
+  }
+
+  if (!addresses?.escrow || !ethers.isAddress(addresses.escrow)) {
+    throw new Error("Invalid Escrow address in contract-address.json");
+  }
 };
 
 // 👂 HANDLE METAMASK CHANGES
-if (typeof window !== "undefined" && window.ethereum) {
+if (
+  typeof window !== "undefined" &&
+  window.ethereum &&
+  !window.__walletListenersAttached
+) {
+  window.__walletListenersAttached = true;
+
   window.ethereum.on("accountsChanged", () => {
     console.log("🔁 MetaMask account changed");
     resetConnection();
@@ -27,37 +49,7 @@ if (typeof window !== "undefined" && window.ethereum) {
   });
 }
 
-// 🔐 CONNECT WALLET
-export const connectWallet = async () => {
-  try {
-    if (!window.ethereum) {
-      alert("Please install MetaMask");
-      return null;
-    }
-
-    provider = new ethers.BrowserProvider(window.ethereum);
-    await provider.send("eth_requestAccounts", []);
-
-    signer = await provider.getSigner();
-    const address = await signer.getAddress();
-    const network = await provider.getNetwork();
-
-    console.log("✅ Connected wallet:", address);
-    console.log("🌐 Chain ID:", network.chainId.toString());
-
-    return {
-      provider,
-      signer,
-      address,
-      chainId: network.chainId.toString(),
-    };
-  } catch (err) {
-    console.error("❌ Wallet connection error:", err);
-    return null;
-  }
-};
-
-// 🔁 GET PROVIDER
+// 🌐 GET PROVIDER
 export const getProvider = async () => {
   if (!window.ethereum) {
     throw new Error("MetaMask not found");
@@ -70,25 +62,125 @@ export const getProvider = async () => {
   return provider;
 };
 
-// 🔁 GET SIGNER
-export const getSigner = async () => {
-  const p = await getProvider();
+// 🌐 SWITCH TO SEPOLIA
+export const switchToSepolia = async () => {
+  if (!window.ethereum) {
+    throw new Error("MetaMask not found");
+  }
 
   try {
-    signer = await p.getSigner();
-    return signer;
+    await window.ethereum.request({
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: SEPOLIA_CHAIN_HEX }],
+    });
+    return true;
   } catch (err) {
+    console.error("❌ Failed to switch to Sepolia:", err);
+
+    if (err?.code === 4902) {
+      throw new Error("Sepolia network is not added in MetaMask");
+    }
+
+    throw new Error("Please switch MetaMask to Sepolia");
+  }
+};
+
+// 🌐 ENSURE CORRECT NETWORK
+export const ensureSepoliaNetwork = async () => {
+  const p = await getProvider();
+  const network = await p.getNetwork();
+
+  if (network.chainId.toString() === SEPOLIA_CHAIN_ID) {
+    return true;
+  }
+
+  await switchToSepolia();
+
+  const refreshedProvider = await getProvider();
+  const refreshedNetwork = await refreshedProvider.getNetwork();
+
+  if (refreshedNetwork.chainId.toString() !== SEPOLIA_CHAIN_ID) {
+    throw new Error("Wrong network. Please connect to Sepolia.");
+  }
+
+  return true;
+};
+
+// 🔐 CONNECT WALLET
+export const connectWallet = async () => {
+  if (connectPromise) return connectPromise;
+
+  connectPromise = (async () => {
+    try {
+      validateConfiguredAddresses();
+
+      if (!window.ethereum) {
+        throw new Error("Please install MetaMask");
+      }
+
+      await window.ethereum.request({ method: "eth_requestAccounts" });
+
+      provider = await getProvider();
+      await ensureSepoliaNetwork();
+
+      signer = await provider.getSigner();
+      const address = await signer.getAddress();
+      const network = await provider.getNetwork();
+
+      console.log("✅ Connected wallet:", address);
+      console.log("🌐 Chain ID:", network.chainId.toString());
+
+      return {
+        provider,
+        signer,
+        address,
+        chainId: network.chainId.toString(),
+      };
+    } catch (err) {
+      console.error("❌ Wallet connection error:", err);
+      throw err;
+    } finally {
+      connectPromise = null;
+    }
+  })();
+
+  return connectPromise;
+};
+
+// 🔁 GET SIGNER
+export const getSigner = async () => {
+  validateConfiguredAddresses();
+
+  const p = await getProvider();
+
+  const accounts = await window.ethereum.request({
+    method: "eth_accounts",
+  });
+
+  if (!accounts || accounts.length === 0) {
     const res = await connectWallet();
-    if (!res) throw new Error("Wallet not connected");
+    if (!res) {
+      throw new Error("Wallet not connected");
+    }
     return res.signer;
   }
+
+  await ensureSepoliaNetwork();
+
+  signer = await p.getSigner();
+  return signer;
 };
 
 // 👤 GET CURRENT ACCOUNT
 export const getCurrentAccount = async () => {
   try {
-    const s = await getSigner();
-    return await s.getAddress();
+    if (!window.ethereum) return null;
+
+    const accounts = await window.ethereum.request({
+      method: "eth_accounts",
+    });
+
+    return accounts?.[0] || null;
   } catch (err) {
     console.error("❌ Could not get current account:", err);
     return null;
@@ -108,28 +200,43 @@ export const getCurrentChainId = async () => {
 };
 
 // 📦 GET SUPPLYCHAIN CONTRACT
-export const getSupplyChain = async () => {
-  const s = await getSigner();
-  return new ethers.Contract(addresses.supplyChain, SupplyChain.abi, s);
+export const getSupplyChain = async (withSigner = true) => {
+  validateConfiguredAddresses();
+
+  if (withSigner) {
+    const s = await getSigner();
+    return new ethers.Contract(addresses.supplyChain, SupplyChain.abi, s);
+  }
+
+  const p = await getProvider();
+  return new ethers.Contract(addresses.supplyChain, SupplyChain.abi, p);
 };
 
 // 💰 GET ESCROW CONTRACT
-export const getEscrow = async () => {
-  const s = await getSigner();
-  return new ethers.Contract(addresses.escrow, Escrow.abi, s);
+export const getEscrow = async (withSigner = true) => {
+  validateConfiguredAddresses();
+
+  if (withSigner) {
+    const s = await getSigner();
+    return new ethers.Contract(addresses.escrow, Escrow.abi, s);
+  }
+
+  const p = await getProvider();
+  return new ethers.Contract(addresses.escrow, Escrow.abi, p);
 };
 
 // 🧪 DEBUG WALLET + NETWORK
 export const debugWallet = async () => {
   try {
     const p = await getProvider();
-    const s = await getSigner();
-    const address = await s.getAddress();
+    const accounts = await window.ethereum.request({ method: "eth_accounts" });
     const network = await p.getNetwork();
 
     const info = {
-      address,
+      address: accounts?.[0] || null,
       chainId: network.chainId.toString(),
+      expectedChainId: SEPOLIA_CHAIN_ID,
+      isCorrectNetwork: network.chainId.toString() === SEPOLIA_CHAIN_ID,
     };
 
     console.log("🧪 Wallet Debug:", info);
@@ -143,8 +250,10 @@ export const debugWallet = async () => {
 // 🧪 DEBUG CONTRACT LINKING
 export const debugContracts = async () => {
   try {
-    const supplyChain = await getSupplyChain();
-    const escrow = await getEscrow();
+    validateConfiguredAddresses();
+
+    const supplyChain = await getSupplyChain(false);
+    const escrow = await getEscrow(false);
 
     let currentEscrow = ethers.ZeroAddress;
     let currentSupply = ethers.ZeroAddress;
@@ -162,8 +271,8 @@ export const debugContracts = async () => {
     }
 
     const info = {
-      supplyChainAddress: addresses.supplyChain,
-      escrowAddress: addresses.escrow,
+      configuredSupplyChainAddress: addresses.supplyChain,
+      configuredEscrowAddress: addresses.escrow,
       linkedEscrowInSupplyChain: currentEscrow,
       linkedSupplyChainInEscrow: currentSupply,
       isLinked:
@@ -179,11 +288,13 @@ export const debugContracts = async () => {
   }
 };
 
-// 🔗 ONE-TIME ADMIN LINKING
+// 🔗 OPTIONAL ADMIN LINKING
 export const linkContracts = async () => {
   try {
-    const supplyChain = await getSupplyChain();
-    const escrow = await getEscrow();
+    validateConfiguredAddresses();
+
+    const supplyChain = await getSupplyChain(true);
+    const escrow = await getEscrow(true);
 
     let currentEscrow = ethers.ZeroAddress;
     let currentSupply = ethers.ZeroAddress;
