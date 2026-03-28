@@ -5,6 +5,7 @@ import RegisterProduct from "./pages/RegisterProduct";
 
 import EscrowDashboard from "./pages/EscrowDashboard";
 import ProductManager from "./pages/ProductManages";
+import MyProducts from "./pages/MyProducts";
 
 export default function App() {
   return (
@@ -15,7 +16,7 @@ export default function App() {
           <Route path="/" element={<Home />} />
           <Route path="/register" element={<RegisterProduct />} />
           <Route path="/product-manager" element={<ProductManager/>} />
-          <Route path="/escrow" element={<EscrowDashboard />} />
+          <Route path="/products" element={<MyProducts/>} />
         </Routes>
       </div>
     </BrowserRouter>

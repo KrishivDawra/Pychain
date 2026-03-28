@@ -343,3 +343,70 @@ export const linkContracts = async () => {
     return false;
   }
 };
+
+// 📋 GET ALL PRODUCTS
+export const getAllProducts = async () => {
+  try {
+    const contract = await getSupplyChain(false);
+    const total = Number(await contract.productCount());
+
+    const products = [];
+
+    for (let i = 1; i <= total; i++) {
+      try {
+        const product = await contract.getProductDetails(i);
+
+        products.push({
+          id: Number(product[0]),
+          name: product[1],
+          metadata: product[2],
+          currentOwner: product[3],
+          shipped: product[4],
+          delivered: product[5],
+        });
+      } catch (err) {
+        console.warn(`⚠️ Could not fetch product ${i}`, err);
+      }
+    }
+
+    return products;
+  } catch (err) {
+    console.error("❌ Failed to fetch all products:", err);
+    return [];
+  }
+};
+
+// 👤 GET PRODUCTS BY OWNER
+export const getProductsByOwner = async (ownerAddress) => {
+  try {
+    if (!ownerAddress || !ethers.isAddress(ownerAddress)) {
+      throw new Error("Invalid owner address");
+    }
+
+    const products = await getAllProducts();
+
+    return products.filter(
+      (product) =>
+        product.currentOwner.toLowerCase() === ownerAddress.toLowerCase()
+    );
+  } catch (err) {
+    console.error("❌ Failed to fetch products by owner:", err);
+    return [];
+  }
+};
+
+// 👜 GET MY PRODUCTS
+export const getMyProducts = async () => {
+  try {
+    const account = await getCurrentAccount();
+
+    if (!account) {
+      return [];
+    }
+
+    return await getProductsByOwner(account);
+  } catch (err) {
+    console.error("❌ Failed to fetch my products:", err);
+    return [];
+  }
+};
