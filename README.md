@@ -66,7 +66,7 @@ A blockchain-based supply chain system with escrow payments, proposed as an exte
 👨‍💻 Author
 
 Krishiv Dawra
-GitHub: https://github.com/YOUR_USERNAME
+GitHub: https://github.com/KrishivDawra/Pychain.git
 Deployment: https://pychain.vercel.app/
 
 ⭐ Star this repo if you like it!
